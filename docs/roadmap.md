@@ -1,6 +1,6 @@
 # PdfCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M6, #3985 follow-up: console and button scripts retain document-script diagnostics; estimates unchanged)
+> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M6, #3985 follow-up: console and button scripts retain document-script diagnostics; shared menu manifest supports Cargo 1.95; estimates unchanged)
 
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M7, #2636 partial: pasting added text boxes and images in the engine and through `content_copy`; estimates unchanged)
@@ -244,7 +244,7 @@ M2 (renderer), M7 (content editing), M10 (OCR and Office), M11 (Preflight and st
 
 ## Revision history
 
-**2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI regressions cover both adapters. Estimates unchanged.
+**2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI regressions cover both adapters; the four shared frontend dependencies use the Cargo 1.95 menu manifest correction in craft-libs#366. Estimates unchanged.
 
 **2026-10-25 · minor:** M14 localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Estimates unchanged.
 

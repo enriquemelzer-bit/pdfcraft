@@ -1,6 +1,6 @@
 # PdfCraft roadmap
 
-> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M6, #3985 follow-up: console and button scripts retain document-script diagnostics; estimates unchanged)
+> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M6, #3985 follow-up: console and button scripts retain document-script diagnostics; shared menu manifest supports Cargo 1.95; estimates unchanged)
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
@@ -201,7 +201,7 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
-- **2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI regressions cover both adapters. Estimates unchanged.
+- **2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI regressions cover both adapters. The four shared frontend dependencies use `acab34c0`, the previous pin plus the Cargo 1.95 menu manifest correction in craft-libs#366. Estimates unchanged.
 
 - **2026-10-24 (M10, #4158 partial):** Word, HTML, RTF and PowerPoint export keep a block that continues another on its line (an italic case name, a link, a superscript) as a run in its own style inside that paragraph, with the source's word space, instead of a paragraph of its own. Style changes that wrap onto the next line still split paragraphs (the reading blocks keep style boundaries). Estimates unchanged.
 - **2026-10-24 (M3, window move on Wayland, #3970 follow-up):** After a move or resize by PdfCraft's own title bar or edges, the button release given back to egui goes before the pointer leaving the window, so hover no longer sticks at the old place until the pointer moves. Found by CodeRabbit in review of #3970; a unit test covers it. Estimates unchanged.
@@ -680,7 +680,7 @@ Newest first: the date, what moved, and the new overall estimate.
 
 ## Revision history
 
-**2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI regressions cover both adapters. Estimates unchanged.
+**2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI regressions cover both adapters; the shared menu manifest supports Cargo 1.95 through craft-libs#366. Estimates unchanged.
 
 **2026-10-25 · minor:** M14 localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Estimates unchanged.
 
