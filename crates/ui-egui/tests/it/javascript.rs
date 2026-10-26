@@ -81,6 +81,7 @@ fn button_scripts_run_and_alert() {
     assert_eq!(h.state().toast.clone().unwrap().0, "Filled in");
 }
 
+/// Install an initializer that defines `hi` before throwing, then clear setup diagnostics.
 fn failing_document_script(h: &mut Harness<'static, PdfCraftApp>) {
     assert!(h.state_mut().apply_edit(Edit::SetDocumentScript {
         name: "init".into(),
@@ -89,6 +90,7 @@ fn failing_document_script(h: &mut Harness<'static, PdfCraftApp>) {
     h.state_mut().js_console.log.clear();
 }
 
+/// Document errors stay visible alongside command results, field changes and command errors.
 #[test]
 fn console_reports_document_script_errors_and_keeps_the_result() {
     let _gpu = std::env::var_os("PDFCRAFT_JS_ERROR_SHOT").map(|_| crate::gpu());
@@ -122,6 +124,7 @@ fn console_reports_document_script_errors_and_keeps_the_result() {
     assert!(log.iter().any(|line| line.starts_with("Error: document script 1: ") && line.contains("document failed")), "{log:?}");
 }
 
+/// Document errors survive button effects and failures, including a button with no other output.
 #[test]
 fn button_reports_document_script_errors_and_keeps_its_actions() {
     let mut h = harness();
