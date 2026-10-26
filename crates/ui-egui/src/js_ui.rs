@@ -86,7 +86,8 @@ impl PdfCraftApp {
         }
     }
 
-    /// Run a push button's JavaScript (its Mouse Up action).
+    /// Run a push button's JavaScript (its Mouse Up action), reporting document initialization
+    /// errors alongside the button's own errors without discarding its effects.
     pub fn run_button_script(&mut self, id: DocId, field: &str, script: &str) {
         // A script reads the fields: include what's still being typed in one (#166).
         if !self.commit_form_typing() {
@@ -103,8 +104,8 @@ impl PdfCraftApp {
                     alerts: o.alerts,
                     console: o.console,
                     requests: o.requests,
-                    errors: o.error.into_iter().collect(),
-                    doc_errors: Vec::new(),
+                    errors: o.error.into_iter().chain(o.doc_errors.iter().cloned()).collect(),
+                    doc_errors: o.doc_errors,
                 };
                 self.handle_js(id, out);
             }
@@ -131,7 +132,8 @@ impl PdfCraftApp {
         }
     }
 
-    /// The console's Run: evaluate the input in the active document.
+    /// The console's Run: evaluate the input in the active document. Document initialization
+    /// errors are shown without replacing the command's completion value or its own error.
     pub fn run_console(&mut self) {
         let Some((i, id)) = self.active_ids() else { return };
         let script = self.js_console.input.clone();
@@ -145,7 +147,8 @@ impl PdfCraftApp {
                     self.views[i].document_changed(&info);
                 }
                 let (error, result) = (o.error.clone(), o.result.clone());
-                let out = JsOutput { alerts: o.alerts, console: o.console, requests: o.requests, errors: Vec::new(), doc_errors: Vec::new() };
+                let out =
+                    JsOutput { alerts: o.alerts, console: o.console, requests: o.requests, errors: o.doc_errors.clone(), doc_errors: o.doc_errors };
                 self.handle_js(id, out);
                 match error {
                     Some(e) => self.js_console.log.push(format!("Error: {e}")),
