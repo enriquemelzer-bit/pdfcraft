@@ -1,6 +1,6 @@
 # PdfCraft roadmap
 
-> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M6, #3985 follow-up: console and button scripts retain document-script diagnostics and provenance; shared menu manifest supports Cargo 1.95; estimates unchanged)
+> **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M6, PR #4850: refreshed against main 1dd2737b; split UI modules retain console/button document diagnostics, provenance regressions and the craft-libs#366 pin; estimates unchanged)
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
@@ -200,6 +200,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
+
+- **2026-10-27 · patch:** M6/PR #4850 refreshed against main `1dd2737b`, retaining its UI module boundaries and the console/button document-error adapters and regressions. Parity evidence points to the relocated `workflows/js_ui.rs`; the four shared frontend dependencies retain `acab34c0` (craft-libs#366). Estimates unchanged.
 
 - **2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI integration and adapter-unit regressions cover visible diagnostics and document-error provenance. The four shared frontend dependencies use `acab34c0`, the previous pin plus the Cargo 1.95 menu manifest correction in craft-libs#366. Estimates unchanged.
 
@@ -679,6 +681,8 @@ Newest first: the date, what moved, and the new overall estimate.
 - **2026-10-10 (UI docking):** Tools and Inspector can be regrouped, split beside the PDF, or floated inside the app window. Existing toggles reopen panels at their saved locations; UI commands arrange/reset panels, and preferences retain their layout. Read/full-screen modes preserve the focused document view. No milestone percentage change.
 
 ## Revision history
+
+**2026-10-27 · patch:** M6/PR #4850 refreshed against main `1dd2737b`. The UI module split retains console/button document-script diagnostics and provenance regressions; opening-view handling follows the new app module, and parity evidence follows the relocated JavaScript module. The shared menu dependencies remain pinned to the published craft-libs#366 correction. Estimates unchanged.
 
 **2026-10-26 · patch:** M6/#3985 follow-up: console and button runs retain document-script errors alongside explicit-script errors, successful results and effects. UI integration and adapter-unit regressions cover visible diagnostics and document-error provenance; the shared menu manifest supports Cargo 1.95 through craft-libs#366. Estimates unchanged.
 
