@@ -1,6 +1,6 @@
 # PdfCraft roadmap
 
-> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M7, #4190: paragraph frames integrated with the engine/edit/UI module layouts; Cargo 1.95 menu manifest correction; regression descriptions corrected; estimates unchanged)
+> **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M7, #4190 review: roadmap blockquote formatting corrected; functionality and estimates unchanged)
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
@@ -200,6 +200,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
+
+- **2026-10-27 · patch:** M7/PR #4190 review follow-up: keep the metadata separator in `docs/roadmap.md` inside its blockquote (MD028). Functionality and estimates unchanged.
 
 - **2026-10-26 · patch:** M7/PR #4190 follows main's #4889 module layout: paragraph geometry, rewriting, UI handles, frame-aware selection and automation remain in the corresponding split modules. Existing regressions, including the corrected vertical-frame/cache descriptions, are retained. Estimates unchanged.
 
