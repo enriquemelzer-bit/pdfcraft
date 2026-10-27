@@ -3,7 +3,7 @@ use super::fallback::{
     Encoder, MAX_TYPE3_GLYPHS, drop_unused_fallback_fonts, needs_type3, no_japanese_font, source_encodes, source_family, source_program_completes,
     source_show, source_space, source_width, type3_encode, type3_font,
 };
-use super::interp::{Carry, interpret};
+use super::interp::{Carry, TextState, from_frame, interpret, to_frame};
 use super::lines::{content_streams, page_dict, rewritten_contents, splice, text_lines};
 use super::*;
 
@@ -218,6 +218,23 @@ pub(crate) fn rewrite_block_from(
 ) -> Result<LineEdit, EditError> {
     let blocks = group_blocks(&lines);
     let b = blocks.get(block).cloned().ok_or_else(|| EditError::Invalid(format!("page {} has no paragraph {}", page + 1, block + 1)))?;
+    let vertical_only = style.vertical_frame.is_some()
+        && text.is_none_or(|text| text == b.editor_text)
+        && BlockStyle { vertical_frame: None, ..style.clone() } == BlockStyle::default();
+    let mut style = style.clone();
+    if let Some([left, right]) = b.horizontal_frame {
+        style.width.get_or_insert(right - left);
+        style.align = style.align.or(b.horizontal_alignment);
+    }
+    style.vertical_frame = style.vertical_frame.or(b.vertical_frame);
+    if let Some([bottom, top]) = style.vertical_frame {
+        if ![bottom, top].iter().all(|v| v.is_finite() && v.abs() <= 1e9) || top <= bottom || top - bottom > 14_400.0 + 1e-6 {
+            return Err(EditError::Invalid("the paragraph's height must be positive and at most 14400 points".into()));
+        }
+        style.vertical_frame = Some([bottom, top.min(bottom + 14_400.0)]);
+        style.width.get_or_insert(b.editing_frame()[2] - b.editing_frame()[0]);
+    }
+    let style = &style;
     let members: Vec<&TextLine> = b.lines.iter().map(|i| &lines[*i]).collect();
     // One clipping run is enough: rewriting the paragraph would drop its mask with the rest.
     let mut dropped = coincident_ops(&lines, &members);
@@ -240,6 +257,14 @@ pub(crate) fn rewrite_block_from(
     // Text turned on the page (a landscape page drawn a quarter turn round) is rewritten in its
     // own text space below; the styled region path lays rows out along the page's x axis.
     let upright = members.iter().all(|line| line.upright());
+    if vertical_only && let Some(bounds) = style.vertical_frame {
+        return text_frame::resize_vertical(doc, page, &b, &lines, bounds);
+    }
+    if !upright && members.iter().any(|line| line.font != first.font || line.size != first.size || line.color != first.color) {
+        return Err(EditError::Invalid(
+            "rewrapping mixed-style turned text isn't supported yet; its height can be changed without rewriting it".into(),
+        ));
+    }
     if !upright && (!style.ranges.is_empty() || style.resource.is_some()) {
         return Err(EditError::Invalid("formatting part of turned text, or choosing a document font for it, isn't supported yet".into()));
     }
@@ -266,6 +291,24 @@ pub(crate) fn rewrite_block_from(
     let streams = content_streams(doc, &p.dict)?;
     let pieces = Pieces::join(&streams.iter().map(|(_, d)| d.as_slice()).collect::<Vec<_>>());
     let ops = pieces.parse().ops;
+    if !upright {
+        // One extracted line can contain several showing operators with different tracking,
+        // rise or rendering modes. The uniform turned-text writer cannot preserve those
+        // differences; refuse before embedding fonts instead of flattening the source style.
+        let selected: std::collections::HashSet<_> = members.iter().flat_map(|line| line.ops.iter().copied()).collect();
+        let shown = interpret(doc, &ops, &res, &mut HashMap::new(), &mut Carry::new(), None, None)?;
+        if shown.iter().filter(|s| selected.contains(&s.op)).any(|s| {
+            let mut state = TextState::of(&s.state);
+            // TD changes leading between rows without changing their glyphs. The writer
+            // derives line spacing from row geometry below; all painted properties must match.
+            state.leading = first.origin.state.leading;
+            state != first.origin.state
+        }) {
+            return Err(EditError::Invalid(
+                "rewrapping turned text with mixed text states isn't supported yet; its height can be changed without rewriting it".into(),
+            ));
+        }
+    }
     // Explicit line breaks stay (#1443), and so does each typed U+0020 space: a run of them is
     // not folded into one (#4199, #3797). `\r\n` and a lone `\r` are breaks too; other white
     // space is written as one space.
@@ -317,11 +360,9 @@ pub(crate) fn rewrite_block_from(
     let rtl = crate::bidi::rtl_base(&flat);
     let anchored_right = rtl && upright && style.width.is_none() && members.len() == 1;
     // The paragraph's width along its lines: in user space unless it is turned.
-    let frame = if upright {
-        b.rect
-    } else {
-        members.iter().map(|l| l.frame_rect()).reduce(|a, f| [a[0].min(f[0]), a[1].min(f[1]), a[2].max(f[2]), a[3].max(f[3])]).unwrap_or(b.rect)
-    };
+    let frame = b.editing_frame();
+    let dir = first.direction();
+    let (along_move, across_move) = to_frame(dir, (dx, dy));
     // A centred title is laid out in the box it already sits in, so it keeps its centre as it
     // grows or wraps, rather than being grown to the right up to the page's margin (#2581).
     // Turned text is left alone: its centre lives along its own baseline, not in page space.
@@ -359,11 +400,33 @@ pub(crate) fn rewrite_block_from(
     } else {
         None
     };
-    let tm = if o.ctm == emit.ctm {
+    let mut tm = if o.ctm == emit.ctm {
         o.tm
     } else {
         let emit_inv = Matrix(emit.ctm).invert().ok_or_else(|| EditError::Invalid("the paragraph has a singular transform".into()))?;
         Matrix(o.tm).then(&Matrix(o.ctm)).then(&emit_inv).0
+    };
+    if b.horizontal_frame.is_some() {
+        let back = Matrix([emit.ctm[0], emit.ctm[1], emit.ctm[2], emit.ctm[3], 0.0, 0.0])
+            .invert()
+            .ok_or_else(|| EditError::Invalid("the paragraph's frame has no area".into()))?;
+        let correction = from_frame(dir, (frame[0] - first.frame_origin().0, 0.0));
+        let (x, y) = back.apply(correction.0, correction.1);
+        tm[4] += x;
+        tm[5] += y;
+    }
+    let saved_frame = if style.width.is_some() {
+        Some(HorizontalFrame::start(
+            frame[0] + along_move,
+            first.frame_origin().1 + across_move,
+            width,
+            style.vertical_frame.map(|[bottom, top]| [bottom + across_move, top + across_move]),
+            align.unwrap_or(crate::added::Align::Left),
+            Matrix(emit.ctm),
+            dir,
+        )?)
+    } else {
+        None
     };
     let type3 = if !reuse && needs_type3(&flat) { Some(type3_font(doc, &mut fonts_res, &flat, family, bold, max_glyphs)?) } else { None };
     let advance = |s: &str| -> f64 {
@@ -462,7 +525,10 @@ pub(crate) fn rewrite_block_from(
     let n = pdfcraft_content::num;
     // The paragraph's operators go, and so does another drawing on the same baseline (a fake-bold
     // second copy, an invisible text layer): the new text is all that may show.
-    let drop = dropped;
+    let mut drop = dropped;
+    if let Some(frame) = first.horizontal_frame {
+        frame.remove(&ops, &mut drop);
+    }
     // Text shown earlier in the same text object stays first: the paragraph then goes where its
     // last row was, after any backgrounds between the rows, or between two halves of the text object.
     let start = last.ops.first().copied().unwrap_or(emit.bt_op);
@@ -477,6 +543,7 @@ pub(crate) fn rewrite_block_from(
     let after = if split { &emit.state } else { &emit.bt_state };
     // In its own graphics state, so a new colour (or anything else) stops at the paragraph.
     let mut block_ops = vec![Op::new("q", vec![])];
+    block_ops.extend(saved_frame.clone());
     block_ops.extend(reveal_ops(&b, &lines, style, emit.ctm)?);
     // Moved: a translation inside that state.
     if let Some((ax, ay)) = movement {
@@ -606,6 +673,9 @@ pub(crate) fn rewrite_block_from(
         }
         block_ops.push(Op::new("S", vec![]));
         block_ops.push(Op::new("Q", vec![]));
+    }
+    if saved_frame.is_some() {
+        block_ops.push(Op::new("EMC", vec![]));
     }
     block_ops.push(Op::new("Q", vec![]));
     block_ops.extend(after.ops().into_iter().filter(|op| !op.is("Tf") || after.font.is_some()));
@@ -849,6 +919,12 @@ pub(crate) fn translate_blocks(doc: &mut Document, page: usize, indexes: &[usize
     }
     if patches.len() != selected.len() {
         return Err(EditError::Invalid("a selected text operation cannot be moved".into()));
+    }
+    for frame in lines.iter().filter(|l| l.ops.iter().any(|i| selected.contains(i))).filter_map(|l| l.horizontal_frame) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = patches.entry(frame.op) {
+            let original = ops.get(frame.op).ok_or_else(|| EditError::Invalid("the paragraph's frame is missing".into()))?;
+            entry.insert(vec![frame.moved(original, offset)?]);
+        }
     }
     let data = splice(&pieces, &ops, |i| patches.remove(&i).map_or((Vec::new(), true), |v| (v, false)));
     let contents = rewritten_contents(doc, &streams, data);

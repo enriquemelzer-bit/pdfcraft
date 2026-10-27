@@ -189,6 +189,14 @@ pub(super) fn to_frame(dir: (f64, f64), p: (f64, f64)) -> (f64, f64) {
     (p.0 * dir.0 + p.1 * dir.1, p.1 * dir.0 - p.0 * dir.1)
 }
 
+pub(super) fn from_frame(dir: (f64, f64), p: (f64, f64)) -> (f64, f64) {
+    (p.0 * dir.0 - p.1 * dir.1, p.0 * dir.1 + p.1 * dir.0)
+}
+
+pub(super) fn frame_corners([left, bottom, right, top]: [f64; 4]) -> [(f64, f64); 4] {
+    [(left, bottom), (right, bottom), (right, top), (left, top)]
+}
+
 /// The box covering both `[x0, y0, x1, y1]` boxes.
 pub(crate) fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
@@ -298,6 +306,7 @@ pub(super) struct Shown {
     pub(super) visual_order: bool,
     pub(super) decodable: bool,
     pub(super) scope: Option<usize>,
+    pub(super) horizontal_frame: Option<HorizontalFrame>,
     pub(super) paint: Paint,
     pub(super) logical_order: bool,
     pub(super) actual_text: bool,
@@ -427,6 +436,8 @@ pub(super) struct Carry {
     pub(super) ts: Ts,
     pub(super) stack: Vec<Ts>,
     pub(super) marked: Vec<Option<usize>>,
+    /// Only actual private frames need storage; ordinary nested marked spans inherit the last.
+    pub(super) frames: Vec<(usize, HorizontalFrame)>,
     /// For each open marked-content sequence, its optional content group when it is `/OC`.
     pub(super) layers: Vec<Option<Vec<u8>>>,
     /// Bytes of glyph text the rest of the page may still produce (see [`MAX_PAGE_TEXT`]).
@@ -461,7 +472,7 @@ impl Carry {
             dash: (Vec::new(), 0.0),
             line_cap: 0,
         };
-        Carry { ts, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: MAX_PAGE_TEXT }
+        Carry { ts, stack: Vec::new(), marked: Vec::new(), frames: Vec::new(), layers: Vec::new(), text_left: MAX_PAGE_TEXT }
     }
 }
 
@@ -491,6 +502,8 @@ pub(super) fn interpret(
     let (mut tm, mut tlm) = (Matrix::IDENTITY, Matrix::IDENTITY);
     let mut bt = 0usize;
     let mut marked = std::mem::take(&mut carry.marked);
+    let mut frames = std::mem::take(&mut carry.frames);
+    let closed_frames = HorizontalFrame::closed(ops);
     let mut layers = std::mem::take(&mut carry.layers);
     let mut actual: Vec<Option<(usize, usize, String)>> = Vec::new();
     for (i, op) in ops.iter().enumerate() {
@@ -501,7 +514,11 @@ pub(super) fn interpret(
                 // Marked text paragraphs/headings are authoritative boundaries. Ignore
                 // artifacts and inner spans, which inherit their enclosing region.
                 let region = matches!(op.name(0), Some(b"P" | b"H" | b"H1" | b"H2" | b"H3" | b"H4" | b"H5" | b"H6" | b"LI" | b"TD" | b"TH"));
-                marked.push(if region { Some(i) } else { marked.last().copied().flatten() });
+                let frame = closed_frames.contains(&i).then(|| HorizontalFrame::read(op, i, ts.ctm)).flatten();
+                marked.push(if region || frame.is_some() { Some(i) } else { marked.last().copied().flatten() });
+                if let Some(frame) = frame {
+                    frames.push((marked.len(), frame));
+                }
                 // A layer named in the resources is told apart by its name, an inline one by where it opens.
                 let layer = op.is("BDC") && op.name(0) == Some(b"OC".as_slice());
                 layers.push(layer.then(|| op.operands.get(1).and_then(Object::as_name).map_or_else(|| format!("@{i}").into_bytes(), <[u8]>::to_vec)));
@@ -518,6 +535,9 @@ pub(super) fn interpret(
             }
             b"EMC" => {
                 marked.pop();
+                if frames.last().is_some_and(|(depth, _)| *depth > marked.len()) {
+                    frames.pop();
+                }
                 layers.pop();
                 if let Some(Some((start, open, logical))) = actual.pop() {
                     let tail = out.split_off(start.min(out.len()));
@@ -782,7 +802,14 @@ pub(super) fn interpret(
                     .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p.0), b[1].min(p.1), b[2].max(p.0), b[3].max(p.1)]);
                 // The same corners along and across the baseline: the run's own box, not its
                 // upright bounding box turned (which is wider by the box's height on a slant).
-                let dir = direction(&trm0);
+                let actual_dir = direction(&trm0);
+                // Metadata cannot assign baseline coordinates from another orientation to
+                // these glyphs. Ignore a mismatched marker, keeping the source ink editable.
+                let horizontal_frame = frames
+                    .last()
+                    .map(|(_, f)| *f)
+                    .filter(|f| (f.direction.0 - actual_dir.0).abs() < 1e-3 && (f.direction.1 - actual_dir.1).abs() < 1e-3);
+                let dir = horizontal_frame.map_or(actual_dir, |f| f.direction);
                 let frame = corners
                     .iter()
                     .map(|&p| to_frame(dir, p))
@@ -839,6 +866,7 @@ pub(super) fn interpret(
                     visual_order: m.visual_order,
                     decodable,
                     scope: marked.last().copied().flatten(),
+                    horizontal_frame,
                     paint: Paint { layers: layers.iter().flatten().cloned().collect(), gs: ts.gs.clone() },
                     logical_order: false,
                     actual_text: false,
@@ -850,6 +878,7 @@ pub(super) fn interpret(
     carry.ts = ts;
     carry.stack = stack;
     carry.marked = marked;
+    carry.frames = frames;
     carry.layers = layers;
     positioned_tracking(&mut out);
     Ok(out)

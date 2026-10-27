@@ -1730,7 +1730,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 // Editable text takes precedence over background/overlapping artwork. Both
                 // inventories are painted every frame, even when text owns the pointer.
                 let text_used =
-                    crate::edit_text_ui::page_input(ui, &resp, &xf, &ptr, i, doc, &lines, view, !others_own_pointer && !image_owns_pointer);
+                    crate::edit_text_ui::page_input(ui, &resp, &xf, &ptr, i, doc, &lines, view, &images, !others_own_pointer && !image_owns_pointer);
                 let image_used = crate::edit_text_ui::image_input(
                     ui,
                     &resp,

@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M7, #4190: paragraph frames integrated with the engine/edit/UI module layouts; Cargo 1.95 menu manifest correction; regression descriptions corrected; estimates unchanged)
+
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away
 
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
@@ -199,8 +201,20 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 
 ## Progress log
 
+- **2026-10-26 · patch:** M7/PR #4190 follows main's #4889 module layout: paragraph geometry, rewriting, UI handles, frame-aware selection and automation remain in the corresponding split modules. Existing regressions, including the corrected vertical-frame/cache descriptions, are retained. Estimates unchanged.
+
+- **2026-10-26 · patch:** M7/PR #4190 review follow-up: the scaled vertical-frame regression now describes movement, undo/redo and save/reopen; the cache regression again owns its cache description. Test behavior and product behavior are unchanged. Estimates unchanged.
+
+- **2026-10-26 · patch:** M7/PR #4190 follows main's engine module split: height-only edits still preserve invisible OCR, and ordinary retyping still reveals the replacement. Horizontal, vertical and rotated frames, TD-leading support and image/frame hit testing are retained. The shared frontend dependencies use the Cargo 1.95 manifest fix in craft-libs#366. Estimates unchanged.
+
+- **2026-10-25 (M7, PR #4190 oriented frame hits):** Empty frame-space clicks follow the paragraph's orientation, so an outer corner of its world-axis bounds does not select the paragraph or block a new marquee. Rectangular marquee intersection and dragging an existing selection remain unchanged; synthetic UI regressions cover document/view rotation. Estimates unchanged.
+- **2026-10-25 (M7, PR #4190 visible-object selection):** Visible artwork inside blank paragraph-frame space keeps ordinary and modifier clicks, and a selected paragraph cannot steal the image's drag. Frame-only marquee selection, mixed-group movement and text over background artwork remain supported. Synthetic UI regressions cover document/view rotation and clipped images. Estimates unchanged.
+- **2026-10-25 (M7, PR #4190 egui 0.37 integration):** Paragraph frame editing retains the new editor accessibility label and pointer-gesture cancellation. The overflow badge uses egui's current scope ID API; horizontal, vertical and rotated frame behavior and the TD-row correction remain in the candidate. Estimates unchanged.
+- **2026-10-25 (M7, PR #4190 integration):** Paragraph frame resizing uses the shared page-pointer routing, preserving panel and editor tap protections. The new Persian catalog includes the overflow notice. Horizontal, vertical and rotated frames and the TD-row correction remain in the candidate. Estimates unchanged.
 - **2026-10-24 (M10, #4158 partial):** Word, HTML, RTF and PowerPoint export keep a block that continues another on its line (an italic case name, a link, a superscript) as a run in its own style inside that paragraph, with the source's word space, instead of a paragraph of its own. Style changes that wrap onto the next line still split paragraphs (the reading blocks keep style boundaries). Estimates unchanged.
 - **2026-10-24 (M3, window move on Wayland, #3970 follow-up):** After a move or resize by PdfCraft's own title bar or edges, the button release given back to egui goes before the pointer leaving the window, so hover no longer sticks at the old place until the pointer moves. Found by CodeRabbit in review of #3970; a unit test covers it. Estimates unchanged.
+- **2026-10-24 (M7, PR #4190 review):** Rotated paragraphs whose rows use TD can resize and retype without a false mixed-style rejection. Synthetic regressions preserve row spacing, frame width and save/reopen behavior; painted-style safeguards remain. Estimates unchanged.
+- **2026-10-23 (M7, text frame candidate):** #3474 frame resizing candidate: explicit paragraph widths and heights persist independently of ink bounds, including later edits, moves, undo/redo and save/reopen. Height keeps overflowing text visible without scaling or cropping. Frames and four edge handles follow arbitrary text angles and page rotations. Height-only edits preserve source operators; mixed-style rotated reflow remains unsupported. Rotated rows positioned with TD remain editable when only their leading differs; painted text properties must still match. Estimates unchanged.
 - **2026-10-24 (M14, #4253):** The annotation quick bar remembers Keep tool selected across restarts, including unpinning. Old and malformed settings keep safe defaults; the opt-in UI control channel reads and changes the same preference. Estimates unchanged.
 
 - **2026-10-23 (M7, #4280):** Edit text names each standard stand-in font after its face (`PCEdTimesBold`, ...) instead of one shared `PCEdHelv`. Rewriting a bold paragraph whose subset lacks an accent no longer repoints the paragraphs set earlier in a regular stand-in at Times-Bold, and the editor's frame stays on the paragraph being edited. Pages saved by older builds keep their shared name and are not repaired. Estimates unchanged.
@@ -675,6 +689,12 @@ Newest first: the date, what moved, and the new overall estimate.
 - **2026-10-10 (UI docking):** Tools and Inspector can be regrouped, split beside the PDF, or floated inside the app window. Existing toggles reopen panels at their saved locations; UI commands arrange/reset panels, and preferences retain their layout. Read/full-screen modes preserve the focused document view. No milestone percentage change.
 
 ## Revision history
+
+**2026-10-26 · patch:** M7/PR #4190 follows main's #4889 module layout: paragraph geometry, rewriting, UI handles, frame-aware selection and automation remain in the corresponding split modules. Existing regressions, including the corrected vertical-frame/cache descriptions, are retained. Estimates unchanged.
+
+**2026-10-26 · patch:** M7/PR #4190 review follow-up: the scaled vertical-frame regression now describes movement, undo/redo and save/reopen; the cache regression again owns its cache description. Test behavior and product behavior are unchanged. Estimates unchanged.
+
+**2026-10-26 · patch:** M7/PR #4190 follows main's engine module split: height-only edits still preserve invisible OCR, and ordinary retyping still reveals the replacement. Horizontal, vertical and rotated frames, TD-leading support and image/frame hit testing are retained. The shared frontend dependencies use the Cargo 1.95 manifest fix in craft-libs#366. Estimates unchanged.
 
 **2026-10-25 · minor:** M14 localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Estimates unchanged.
 
