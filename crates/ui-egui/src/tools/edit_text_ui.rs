@@ -11,7 +11,8 @@ use egui::{Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Stroke};
 use pdfcraft_engine::{Edit, ObjectKind, ObjectTarget};
 use pdfcraft_render::DocInfo;
 
-use crate::canvas::{DocView, PageXform};
+use crate::canvas::{DocView, PageToolContext, PageXform};
+use crate::page_cursor::Layer;
 use crate::page_pointer::PagePointer;
 
 mod background;
@@ -20,7 +21,7 @@ mod layout;
 
 pub(crate) use background::TextBackground;
 pub use image::{CropMode, ImageSelection};
-pub(crate) use image::{ImageAction, image_input, image_owns_pointer};
+pub(crate) use image::{ImageAction, ImageCx, image_input, image_owns_pointer};
 #[cfg(test)]
 use image::{rotate_knob, turn_degrees};
 #[cfg(test)]
@@ -456,17 +457,8 @@ fn user_box(xf: &PageXform, info: &DocInfo, page: usize, r: Rect) -> [f64; 4] {
 
 /// Open `block` on `page` in the inline editor. The box's geometry and source are read from the
 /// `lines` handed in, so callers pass the document's current inventory.
-#[allow(clippy::too_many_arguments)]
-fn open_editor(
-    ui: &egui::Ui,
-    xf: &PageXform,
-    doc: &pdfcraft_engine::Document,
-    lines: &[pdfcraft_engine::TextBlock],
-    boxes: &[Rect],
-    page: usize,
-    block: usize,
-    view: &mut DocView,
-) {
+fn open_editor(cx: PageToolContext<'_>, lines: &[pdfcraft_engine::TextBlock], boxes: &[Rect], block: usize, view: &mut DocView) {
+    let PageToolContext { ui, xf, doc, page, .. } = cx;
     view.pending_text_open = None;
     let (Some(l), Some(b)) = (lines.get(block), boxes.get(block)) else { return };
     view.image_selection = None;
@@ -508,19 +500,14 @@ fn open_editor(
 
 /// Lines and their screen boxes for a page; hover outlines, click opens the editor. Returns
 /// `true` when the pointer was used.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn page_input(
-    ui: &egui::Ui,
-    resp: &egui::Response,
-    xf: &PageXform,
-    ptr: &PagePointer,
-    page: usize,
-    doc: &pdfcraft_engine::Document,
+    cx: PageToolContext<'_>,
     lines: &[pdfcraft_engine::TextBlock],
     view: &mut DocView,
     images: &[pdfcraft_engine::PageImage],
     allow_interaction: bool,
 ) -> bool {
+    let PageToolContext { ui, resp, xf, ptr, page, doc, .. } = cx;
     let info = &doc.info;
     if view.block_drag.is_some_and(|d| d.generation != doc.edit_generation()) {
         view.block_drag = None;
@@ -555,7 +542,7 @@ pub(crate) fn page_input(
         // The edit may have regrouped the page: open the paragraph that was clicked, wherever it
         // is now, and none if it was merged into another (#2516).
         match key.find(lines, 0) {
-            Some(block) => open_editor(ui, xf, doc, lines, &boxes, page, block, view),
+            Some(block) => open_editor(cx, lines, &boxes, block, view),
             None => view.pending_text_open = None,
         }
     }
@@ -582,7 +569,7 @@ pub(crate) fn page_input(
         if resizing {
             frame.handles(&painter, preview);
         }
-        ui.ctx().set_cursor_icon(d.grip.cursor(&frame));
+        view.cursor.claim(Layer::Drag, d.grip.cursor(&frame));
         if resp.drag_stopped() || !ptr.any_down {
             view.block_drag = None;
             let source = l.editing_frame();
@@ -647,17 +634,13 @@ pub(crate) fn page_input(
         frames[hit].handles(&painter, frames[hit].rect);
     }
     // A closed paragraph moves when dragged (the four-way arrow says so; a click still opens it
-    // for typing); an edge rewraps it. The open one takes the text cursor. Only where the page
-    // shows, so the mode bar and side panels over a paragraph scrolled under them keep their own
-    // cursor (#2755).
-    if resp.contains_pointer() {
-        ui.ctx().set_cursor_icon(if on_edge {
-            grip.cursor(&frames[hit])
-        } else if active.is_none() {
-            egui::CursorIcon::Move
-        } else {
-            egui::CursorIcon::Text
-        });
+    // for typing); an edge rewraps it. The open one takes the text cursor.
+    if on_edge {
+        view.cursor.claim(Layer::Handle, grip.cursor(&frames[hit]));
+    } else if active.is_none() {
+        view.cursor.claim(Layer::Text, egui::CursorIcon::Move);
+    } else {
+        view.cursor.claim(if active == Some(hit) { Layer::Editor } else { Layer::Text }, egui::CursorIcon::Text);
     }
     if resp.clicked() {
         view.image_selection = None;
@@ -679,7 +662,7 @@ pub(crate) fn page_input(
             view.pending_text_open = lines.get(hit).map(|l| (page, pdfcraft_engine::BlockKey::of(l)));
             return true;
         }
-        open_editor(ui, xf, doc, lines, &boxes, page, hit, view);
+        open_editor(cx, lines, &boxes, hit, view);
     }
     true
 }

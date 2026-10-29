@@ -2,7 +2,10 @@
 //! Private marked content keeps it with the text across saves without painting anything.
 
 use super::interp::{from_frame, to_frame};
-use super::*;
+use super::{
+    Dict, Document, EditError, HashMap, LineEdit, Matrix, Object, Op, Pieces, TextBlock, TextLine, content_streams, is_centred, page_dict,
+    rewritten_contents, splice,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct HorizontalFrame {
@@ -176,6 +179,167 @@ impl HorizontalFrame {
     }
 }
 
+/// The kinds of nested content objects a frame must not cross.
+fn boundary(op: &Op) -> Option<(&'static str, bool)> {
+    match op.op.as_slice() {
+        b"BMC" | b"BDC" => Some(("marked", true)),
+        b"EMC" => Some(("marked", false)),
+        b"BT" => Some(("text", true)),
+        b"ET" => Some(("text", false)),
+        b"q" => Some(("graphics", true)),
+        b"Q" => Some(("graphics", false)),
+        b"BX" => Some(("compatibility", true)),
+        b"EX" => Some(("compatibility", false)),
+        _ => None,
+    }
+}
+
+/// Complete objects crossing the selected interval; common enclosing objects stay outside.
+fn complete_interval(ops: &[Op], mut start: usize, mut end: usize) -> Result<(usize, usize), EditError> {
+    let (mut left, mut right, mut stack) = (Vec::new(), Vec::new(), Vec::new());
+    let mut closes = HashMap::new();
+    for (i, op) in ops.iter().enumerate() {
+        if i == start {
+            left = stack.clone();
+        }
+        if i == end {
+            right = stack.clone();
+        }
+        if let Some((kind, opening)) = boundary(op) {
+            if opening {
+                stack.push((i, kind));
+            } else if let Some((open, expected)) = stack.pop() {
+                if expected != kind {
+                    return Err(EditError::Invalid("the paragraph's page has crossing content object boundaries".into()));
+                }
+                closes.insert(open, i);
+            } else {
+                return Err(EditError::Invalid("the paragraph's page has unmatched content object boundaries".into()));
+            }
+        }
+    }
+    let common = left.iter().zip(&right).take_while(|(a, b)| a == b).count();
+    if let Some((open, _)) = left.get(common) {
+        start = *open;
+    }
+    if let Some((open, _)) = right.get(common) {
+        end = *closes.get(open).ok_or_else(|| EditError::Invalid("the paragraph crosses unfinished content objects".into()))?;
+    }
+    Ok((start, end))
+}
+
+fn shows_text(op: &Op) -> bool {
+    match op.op.as_slice() {
+        b"TJ" => !op.operands.last().and_then(Object::as_array).is_some_and(|parts| {
+            parts.iter().all(|p| matches!(p, Object::Int(_) | Object::Real(_)) || p.as_string().is_some_and(|s| s.bytes.is_empty()))
+        }),
+        b"Tj" | b"'" | b"\"" => !op.operands.last().and_then(Object::as_string).is_some_and(|s| s.bytes.is_empty()),
+        _ => false,
+    }
+}
+
+fn validate_interval(ops: &[Op], selected: &std::collections::HashSet<usize>, start: usize, end: usize) -> Result<(), EditError> {
+    let mut depth = 0_usize;
+    for (i, op) in ops.iter().enumerate().take(end.saturating_add(1)).skip(start) {
+        if shows_text(op) && !selected.contains(&i) {
+            return Err(EditError::Invalid("the paragraph's frame would include unrelated text".into()));
+        }
+        if let Some((_, opening)) = boundary(op) {
+            if opening {
+                depth = depth.saturating_add(1);
+            } else {
+                depth = depth.checked_sub(1).ok_or_else(|| EditError::Invalid("the paragraph crosses unmatched content objects".into()))?;
+            }
+        }
+    }
+    if depth != 0 {
+        return Err(EditError::Invalid("the paragraph crosses unfinished content objects".into()));
+    }
+    Ok(())
+}
+
+/// The wrapper can begin before an inner cm, so use the CTM at the insertion point.
+fn insertion_ctm(ops: &[Op], start: usize) -> Matrix {
+    let (mut ctm, mut graphics) = (Matrix::IDENTITY, Vec::new());
+    for op in ops.iter().take(start) {
+        match op.op.as_slice() {
+            b"q" => graphics.push(ctm),
+            b"Q" => {
+                if let Some(saved) = graphics.pop() {
+                    ctm = saved;
+                }
+            }
+            b"cm" => {
+                if let Some(m) = op.nums::<6>() {
+                    ctm = Matrix(m).then(&ctm);
+                }
+            }
+            _ => {}
+        }
+    }
+    ctm
+}
+
+fn resized_marker(frame: HorizontalFrame, ops: &[Op], bounds: [f64; 2]) -> Result<Op, EditError> {
+    let mut op = ops.get(frame.op).cloned().ok_or_else(|| EditError::Invalid("the paragraph's frame is missing".into()))?;
+    let inverse = frame.ctm.invert().ok_or_else(|| EditError::Invalid("the paragraph's frame has no area".into()))?;
+    let bottom = from_frame(frame.direction, (frame.bounds[0], bounds[0]));
+    let top = from_frame(frame.direction, (frame.bounds[0], bounds[1]));
+    let (x0, y0) = inverse.apply(bottom.0, bottom.1);
+    let (x1, y1) = inverse.apply(top.0, top.1);
+    let Some(Object::Dict(properties)) = op.operands.get_mut(1) else {
+        return Err(EditError::Invalid("the paragraph's frame is missing".into()));
+    };
+    properties.set(b"Vertical".to_vec(), Object::Array([x0, y0, x1, y1].map(Object::Real).to_vec()));
+    if HorizontalFrame::read(&op, frame.op, frame.ctm).is_none() {
+        return Err(EditError::Invalid("the paragraph's frame has invalid geometry".into()));
+    }
+    Ok(op)
+}
+
+fn wrap_vertical(
+    pieces: &Pieces,
+    ops: &[Op],
+    block: &TextBlock,
+    lines: &[TextLine],
+    bounds: [f64; 2],
+    crop: [f64; 4],
+) -> Result<Vec<Vec<u8>>, EditError> {
+    let first = block.lines.first().and_then(|i| lines.get(*i)).ok_or_else(|| EditError::Invalid("the paragraph has no source runs".into()))?;
+    let selected: std::collections::HashSet<_> = block.lines.iter().filter_map(|i| lines.get(*i)).flat_map(|l| l.ops.iter().copied()).collect();
+    let start = selected.iter().copied().min().ok_or_else(|| EditError::Invalid("the paragraph has no drawing".into()))?;
+    let end = selected.iter().copied().max().ok_or_else(|| EditError::Invalid("the paragraph has no drawing".into()))?;
+    let (start, end) = complete_interval(ops, start, end)?;
+    validate_interval(ops, &selected, start, end)?;
+    let ctm = insertion_ctm(ops, start);
+    let rect = block.editing_frame();
+    // Once the frame is explicit, later rewrites no longer infer alignment from the page.
+    // Retain that inference now without changing any of the original text operators.
+    let align = block.horizontal_alignment.unwrap_or_else(|| {
+        if crate::bidi::rtl_base(&block.editor_text) {
+            crate::added::Align::Right
+        } else if first.upright() && is_centred(block, lines, (crop[0] + crop[2]) / 2.0, first.size) {
+            crate::added::Align::Center
+        } else {
+            crate::added::Align::Left
+        }
+    });
+    let marker = HorizontalFrame::start(rect[0], first.frame_origin().1, rect[2] - rect[0], Some(bounds), align, ctm, first.direction())?;
+    Ok(splice(pieces, ops, |i| {
+        let mut insert = Vec::new();
+        if i == start {
+            insert.push(marker.clone());
+        }
+        if i == end {
+            if let Some(op) = ops.get(i) {
+                insert.push(op.clone());
+            }
+            insert.push(Op::new("EMC", vec![]));
+        }
+        (insert, i != end)
+    }))
+}
+
 /// Change only the frame metadata: source glyph operators, kerning and row breaks stay intact.
 pub(super) fn resize_vertical(
     doc: &mut Document,
@@ -190,135 +354,10 @@ pub(super) fn resize_vertical(
     let pieces = Pieces::join(&streams.iter().map(|(_, d)| d.as_slice()).collect::<Vec<_>>());
     let ops = pieces.parse().ops;
     let data = if let Some(frame) = first.horizontal_frame {
-        let mut op = ops.get(frame.op).cloned().ok_or_else(|| EditError::Invalid("the paragraph's frame is missing".into()))?;
-        let inverse = frame.ctm.invert().ok_or_else(|| EditError::Invalid("the paragraph's frame has no area".into()))?;
-        let bottom = from_frame(frame.direction, (frame.bounds[0], bounds[0]));
-        let top = from_frame(frame.direction, (frame.bounds[0], bounds[1]));
-        let (x0, y0) = inverse.apply(bottom.0, bottom.1);
-        let (x1, y1) = inverse.apply(top.0, top.1);
-        let Some(Object::Dict(properties)) = op.operands.get_mut(1) else {
-            return Err(EditError::Invalid("the paragraph's frame is missing".into()));
-        };
-        properties.set(b"Vertical".to_vec(), Object::Array([x0, y0, x1, y1].map(Object::Real).to_vec()));
-        if HorizontalFrame::read(&op, frame.op, frame.ctm).is_none() {
-            return Err(EditError::Invalid("the paragraph's frame has invalid geometry".into()));
-        }
+        let op = resized_marker(frame, &ops, bounds)?;
         splice(&pieces, &ops, |i| if i == frame.op { (vec![op.clone()], false) } else { (Vec::new(), true) })
     } else {
-        let selected: std::collections::HashSet<_> = block.lines.iter().filter_map(|i| lines.get(*i)).flat_map(|l| l.ops.iter().copied()).collect();
-        let mut start = selected.iter().copied().min().ok_or_else(|| EditError::Invalid("the paragraph has no drawing".into()))?;
-        let mut end = selected.iter().copied().max().ok_or_else(|| EditError::Invalid("the paragraph has no drawing".into()))?;
-        // A marked sequence must be properly nested with text, graphics and compatibility
-        // objects too. Complete every object crossing the selected interval's boundaries;
-        // common enclosing objects stay outside the frame. No glyph operators are rewritten.
-        let boundary = |op: &Op| match op.op.as_slice() {
-            b"BMC" | b"BDC" => Some(("marked", true)),
-            b"EMC" => Some(("marked", false)),
-            b"BT" => Some(("text", true)),
-            b"ET" => Some(("text", false)),
-            b"q" => Some(("graphics", true)),
-            b"Q" => Some(("graphics", false)),
-            b"BX" => Some(("compatibility", true)),
-            b"EX" => Some(("compatibility", false)),
-            _ => None,
-        };
-        let (mut left, mut right, mut stack) = (Vec::new(), Vec::new(), Vec::new());
-        let mut closes = HashMap::new();
-        for (i, op) in ops.iter().enumerate() {
-            if i == start {
-                left = stack.clone();
-            }
-            if i == end {
-                right = stack.clone();
-            }
-            if let Some((kind, opening)) = boundary(op) {
-                if opening {
-                    stack.push((i, kind));
-                } else if let Some((open, expected)) = stack.pop() {
-                    if expected != kind {
-                        return Err(EditError::Invalid("the paragraph's page has crossing content object boundaries".into()));
-                    }
-                    closes.insert(open, i);
-                } else {
-                    return Err(EditError::Invalid("the paragraph's page has unmatched content object boundaries".into()));
-                }
-            }
-        }
-        let common = left.iter().zip(&right).take_while(|(a, b)| a == b).count();
-        if let Some((open, _)) = left.get(common) {
-            start = *open;
-        }
-        if let Some((open, _)) = right.get(common) {
-            end = *closes.get(open).ok_or_else(|| EditError::Invalid("the paragraph crosses unfinished content objects".into()))?;
-        }
-        let mut depth = 0_usize;
-        for (i, op) in ops.iter().enumerate().take(end.saturating_add(1)).skip(start) {
-            let shows_text = match op.op.as_slice() {
-                b"TJ" => !op.operands.last().and_then(Object::as_array).is_some_and(|parts| {
-                    parts.iter().all(|p| matches!(p, Object::Int(_) | Object::Real(_)) || p.as_string().is_some_and(|s| s.bytes.is_empty()))
-                }),
-                b"Tj" | b"'" | b"\"" => !op.operands.last().and_then(Object::as_string).is_some_and(|s| s.bytes.is_empty()),
-                _ => false,
-            };
-            if shows_text && !selected.contains(&i) {
-                return Err(EditError::Invalid("the paragraph's frame would include unrelated text".into()));
-            }
-            if let Some((_, opening)) = boundary(op) {
-                if opening {
-                    depth = depth.saturating_add(1);
-                } else {
-                    depth = depth.checked_sub(1).ok_or_else(|| EditError::Invalid("the paragraph crosses unmatched content objects".into()))?;
-                }
-            }
-        }
-        if depth != 0 {
-            return Err(EditError::Invalid("the paragraph crosses unfinished content objects".into()));
-        }
-        // The wrapper can begin before an inner cm, so use the CTM at the insertion point.
-        let (mut ctm, mut graphics) = (Matrix::IDENTITY, Vec::new());
-        for op in ops.iter().take(start) {
-            match op.op.as_slice() {
-                b"q" => graphics.push(ctm),
-                b"Q" => {
-                    if let Some(saved) = graphics.pop() {
-                        ctm = saved;
-                    }
-                }
-                b"cm" => {
-                    if let Some(m) = op.nums::<6>() {
-                        ctm = Matrix(m).then(&ctm);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let rect = block.editing_frame();
-        let crop = p.crop(doc);
-        // Once the frame is explicit, later rewrites no longer infer alignment from the page.
-        // Retain that inference now without changing any of the original text operators.
-        let align = block.horizontal_alignment.unwrap_or_else(|| {
-            if crate::bidi::rtl_base(&block.editor_text) {
-                crate::added::Align::Right
-            } else if first.upright() && is_centred(block, lines, (crop[0] + crop[2]) / 2.0, first.size) {
-                crate::added::Align::Center
-            } else {
-                crate::added::Align::Left
-            }
-        });
-        let marker = HorizontalFrame::start(rect[0], first.frame_origin().1, rect[2] - rect[0], Some(bounds), align, ctm, first.direction())?;
-        splice(&pieces, &ops, |i| {
-            let mut insert = Vec::new();
-            if i == start {
-                insert.push(marker.clone());
-            }
-            if i == end {
-                if let Some(op) = ops.get(i) {
-                    insert.push(op.clone());
-                }
-                insert.push(Op::new("EMC", vec![]));
-            }
-            (insert, i != end)
-        })
+        wrap_vertical(&pieces, &ops, block, lines, bounds, p.crop(doc))?
     };
     let contents = rewritten_contents(doc, &streams, data);
     doc.update_dict(p.obj, |d| d.set(b"Contents".to_vec(), contents))?;

@@ -3,7 +3,7 @@ use super::fallback::MAX_TYPE3_GLYPHS;
 use super::interp::{frame_corners, from_frame, to_frame};
 use super::lines::{page_dict, text_lines};
 use super::rewrite::rewrite_block_from;
-use super::*;
+use super::{DecodeBudget, Document, EditError, Metrics, Object, TextLine, TextSession, union};
 
 /// An embedded sfnt source face, read only for the inline editor. Bytes stay in memory and
 /// are never installed, copied into assets, or used as a font for another document.
