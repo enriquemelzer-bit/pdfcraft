@@ -762,17 +762,27 @@ fn frame_style(block: &TextBlock, style: &BlockStyle) -> Result<BlockStyle, Edit
     Ok(style)
 }
 
+/// A comparison copy: a repeated colour operator paints the same wherever its source bytes lie.
+/// Keep every other property, including operator order and operands, without altering provenance.
+fn without_paint_spans(mut state: TextState) -> TextState {
+    for op in state.fill.iter_mut().chain(&mut state.stroke) {
+        op.span = 0..0;
+    }
+    state
+}
+
 fn ensure_uniform_turned_text(doc: &Document, ops: &[Op], res: &Dict, members: &[&TextLine], first: &TextLine) -> Result<(), EditError> {
     // One extracted line can contain several showing operators with different tracking,
     // rise or rendering modes. Refuse before embedding fonts instead of flattening the source.
     let selected: std::collections::HashSet<_> = members.iter().flat_map(|line| line.ops.iter().copied()).collect();
     let shown = interpret(doc, ops, res, &mut HashMap::new(), &mut Carry::new(), None, None)?;
+    let expected = without_paint_spans(first.origin.state.clone());
     if shown.iter().filter(|s| selected.contains(&s.op)).any(|s| {
         let mut state = TextState::of(&s.state);
         // TD changes leading between rows without changing their glyphs. The writer derives
         // line spacing from row geometry; all painted properties must match.
         state.leading = first.origin.state.leading;
-        state != first.origin.state
+        without_paint_spans(state) != expected
     }) {
         return Err(EditError::Invalid(
             "rewrapping turned text with mixed text states isn't supported yet; its height can be changed without rewriting it".into(),

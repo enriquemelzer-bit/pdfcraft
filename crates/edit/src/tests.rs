@@ -5789,6 +5789,67 @@ fn rotated_text_mixed_style_width_is_refused_without_flattening_source_runs() {
     assert!(before.matches(&doc));
 }
 
+/// Repeated paint instructions are parsed at distinct byte offsets but describe the same state.
+fn resized_rotated_text_with_repeated_paint(paint: &str) -> Document {
+    let mut doc = text_page(&format!(
+        "BT /F1 12 Tf 14.4 TL 0.8660254037844386 0.5 -0.5 0.8660254037844386 300 400 Tm \
+         {paint} (One two ) Tj {paint} (three four) Tj ET"
+    ));
+    let source = text::text_blocks(&doc, 0).unwrap();
+    assert_eq!(source.len(), 1, "both source shows must belong to the paragraph being resized");
+    assert_eq!(source[0].editor_text, "One two three four");
+    text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { width: Some(28.0), ..Default::default() })
+        .expect("identical paint at different source offsets must allow rotated reflow");
+    let reopened = reopen(&doc);
+    let blocks = text::text_blocks(&reopened, 0).unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].editor_text, "One\ntwo\nthree\nfour");
+    assert!((blocks[0].rotation - 30.0).abs() < 0.01, "reflow must retain the source orientation");
+    let [left, right] = blocks[0].horizontal_frame.expect("the chosen frame must survive save/reopen");
+    assert!((right - left - 28.0).abs() < 0.01, "the frame must stay 28 points wide along the baseline");
+    reopened
+}
+
+/// Repeating the same fill at another source offset permits rotated reflow and keeps its colour.
+#[test]
+fn rotated_text_repeated_fill_can_resize_and_reopen() {
+    let doc = resized_rotated_text_with_repeated_paint("0.2 0.4 0.6 rg");
+    let lines = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(lines.len(), 4);
+    assert!(lines.iter().all(|line| line.color == [0.2, 0.4, 0.6]), "every rewritten row must keep the source fill");
+}
+
+/// Repeating the same stored stroke permits rotated reflow and preserves that state on reopen.
+#[test]
+fn rotated_text_repeated_stroke_can_resize_and_reopen() {
+    // Tr remains 0 so the test isolates rotated-state validation from stroked-run grouping.
+    // The guard still compares the stored stroke state, even while glyphs use their fill.
+    let doc = resized_rotated_text_with_repeated_paint("1 0 0 RG");
+    let shown = painted_shows(&doc);
+    assert_eq!(shown.len(), 4);
+    assert!(shown.iter().all(|s| s.render_mode == 0 && s.stroke == ["1 0 0 RG"]), "reflow must preserve the stored stroke state");
+}
+
+/// Different fill or stroke values remain a refused mixed-state edit without document mutation.
+#[test]
+fn rotated_text_different_paint_resize_is_refused_without_mutation() {
+    for (first, second) in [("1 0 0 rg", "0 0 1 rg"), ("1 0 0 RG", "0 0 1 RG")] {
+        let mut doc = text_page(&format!(
+            "BT /F1 12 Tf 0.8660254037844386 0.5 -0.5 0.8660254037844386 300 400 Tm \
+             {first} (One ) Tj {second} (two) Tj ET"
+        ));
+        let source = text::text_blocks(&doc, 0).unwrap();
+        assert_eq!(source.len(), 1, "{first} / {second}: both paints must be in the selected paragraph");
+        assert_eq!(source[0].editor_text, "One two");
+        let before = doc.read_state();
+        assert!(
+            text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { width: Some(28.0), ..Default::default() }).is_err(),
+            "{first} / {second}: differing paint must not be flattened"
+        );
+        assert!(before.matches(&doc), "a refused {first} / {second} edit must leave the document unchanged");
+    }
+}
+
 #[test]
 fn rotated_text_tracking_resize_is_refused_without_mutation() {
     for state in ["2 Tc", "50 Tz", "3 Ts", "1 Tr", "4 Tw"] {
