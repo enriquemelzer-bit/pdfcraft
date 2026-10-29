@@ -777,12 +777,17 @@ fn ensure_uniform_turned_text(doc: &Document, ops: &[Op], res: &Dict, members: &
     let selected: std::collections::HashSet<_> = members.iter().flat_map(|line| line.ops.iter().copied()).collect();
     let shown = interpret(doc, ops, res, &mut HashMap::new(), &mut Carry::new(), None, None)?;
     let expected = without_paint_spans(first.origin.state.clone());
+    let expected_transform = Matrix(first.origin.tm).then(&Matrix(first.origin.ctm));
     if shown.iter().filter(|s| selected.contains(&s.op)).any(|s| {
+        // Row translations may differ, but the writer uses the first row's scale and shear
+        // for every glyph. Allow only composition roundoff, with an absolute tolerance.
+        let transform = s.tm.then(&s.state.ctm);
+        let same_linear = transform.0.iter().zip(expected_transform.0).take(4).all(|(a, b)| (a - b).abs() <= 1e-9);
         let mut state = TextState::of(&s.state);
         // TD changes leading between rows without changing their glyphs. The writer derives
         // line spacing from row geometry; all painted properties must match.
         state.leading = first.origin.state.leading;
-        without_paint_spans(state) != expected
+        !same_linear || without_paint_spans(state) != expected
     }) {
         return Err(EditError::Invalid(
             "rewrapping turned text with mixed text states isn't supported yet; its height can be changed without rewriting it".into(),

@@ -5869,6 +5869,119 @@ fn rotated_text_tracking_resize_is_refused_without_mutation() {
     }
 }
 
+/// Two 90-degree rows with identical text state; their baselines are (300,400) and (314,400).
+fn rotated_transform_rows(second_ctm: &str, second_tm: &str) -> Document {
+    text_page(&format!(
+        "q BT /F1 12 Tf 14 TL 0.2 0.4 0.6 rg 0 1 -1 0 300 400 Tm (One) Tj ET Q \
+         q {second_ctm} cm BT /F1 12 Tf 14 TL 0.2 0.4 0.6 rg {second_tm} Tm (two) Tj ET Q"
+    ))
+}
+
+/// A single paragraph with equal paint and glyph heights must reject differing baseline scales atomically.
+fn assert_rotated_transform_width_refused(mut doc: Document) {
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+    assert_eq!(blocks.len(), 1, "both scales must be in the paragraph selected for reflow");
+    assert_eq!(blocks[0].editor_text, "One\ntwo");
+    let lines = text::text_lines(&doc, 0).unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].baseline(), [300.0, 400.0]);
+    assert_eq!(lines[1].baseline(), [314.0, 400.0]);
+    assert!(lines.iter().all(|line| line.size == 12.0 && line.color == [0.2, 0.4, 0.6]), "only the linear transform differs");
+    let before = doc.read_state();
+    let error = text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { width: Some(90.0), ..Default::default() })
+        .expect_err("reflow must refuse to flatten a different horizontal glyph scale");
+    assert!(matches!(error, EditError::Invalid(_)), "{error}");
+    assert!(before.matches(&doc), "refused transformed text must not mutate the document");
+}
+
+/// Rows grouped by their direction may still have different Tm scales, which reflow must refuse.
+#[test]
+fn rotated_text_transform_tm_scale_changes_refuse_width_without_mutation() {
+    assert_rotated_transform_width_refused(rotated_transform_rows("1 0 0 1 0 0", "0 2 -1 0 314 400"));
+}
+
+/// A CTM can double the baseline axis without changing the text state or the glyph height.
+#[test]
+fn rotated_text_transform_ctm_scale_changes_refuse_width_without_mutation() {
+    assert_rotated_transform_width_refused(rotated_transform_rows("1 0 0 2 0 0", "0 1 -1 0 314 200"));
+}
+
+/// Every selected show must be checked even when extraction joins different scales into one line.
+#[test]
+fn rotated_text_transform_scale_change_inside_one_line_refuses_width_without_mutation() {
+    let mut doc = text_page(
+        "BT /F1 12 Tf 14 TL 0.2 0.4 0.6 rg 0 1 -1 0 300 400 Tm (One ) Tj \
+         0.2 0.4 0.6 rg 0 2 -1 0 300 430 Tm (two) Tj ET",
+    );
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].editor_text, "One two");
+    assert_eq!(text::text_lines(&doc, 0).unwrap().len(), 1, "checking only each extracted line's origin would miss the second scale");
+    let before = doc.read_state();
+    let error = text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { width: Some(90.0), ..Default::default() })
+        .expect_err("a different scale inside one extracted line must still be refused");
+    assert!(matches!(error, EditError::Invalid(_)), "{error}");
+    assert!(before.matches(&doc));
+}
+
+/// Height changes only frame metadata, so both TM- and CTM-scaled source glyphs remain untouched.
+#[test]
+fn rotated_text_transform_height_only_preserves_different_scales_after_reopen() {
+    for (ctm, tm) in [("1 0 0 1 0 0", "0 2 -1 0 314 400"), ("1 0 0 2 0 0", "0 1 -1 0 314 200")] {
+        let mut doc = rotated_transform_rows(ctm, tm);
+        let before = text::text_lines(&doc, 0).unwrap();
+        assert_eq!(before.len(), 2);
+        assert_eq!(text::text_blocks(&doc, 0).unwrap().len(), 1);
+        text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { vertical_frame: Some([-350.0, -275.0]), ..Default::default() })
+            .expect("a metadata-only height edit must preserve different source scales");
+        let reopened = reopen(&doc);
+        let blocks = text::text_blocks(&reopened, 0).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].editor_text, "One\ntwo");
+        assert_eq!(blocks[0].vertical_frame, Some([-350.0, -275.0]));
+        assert!((blocks[0].rotation - 90.0).abs() < 0.01);
+        let after = text::text_lines(&reopened, 0).unwrap();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0].baseline(), [300.0, 400.0]);
+        assert_eq!(after[1].baseline(), [314.0, 400.0]);
+        for (original, resized) in before.iter().zip(&after) {
+            assert_eq!(resized.text, original.text);
+            assert_eq!(resized.ink, original.ink, "height must preserve each glyph's geometry");
+            assert_eq!(resized.rect, original.rect);
+            assert_eq!(resized.color, original.color);
+        }
+    }
+}
+
+/// Reflow compares the composed linear map: equivalent TM/CTM splits and translations stay valid.
+#[test]
+fn rotated_text_transform_equivalent_compositions_and_translations_keep_geometry_after_reopen() {
+    for (ctm, tm) in [("1 0 0 2 0 0", "0 0.5 -1 0 314 200"), ("1 0 0 1 14 -100", "0 1 -1 0 300 500")] {
+        let mut doc = rotated_transform_rows(ctm, tm);
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].editor_text, "One\ntwo");
+        let before = text::text_lines(&doc, 0).unwrap();
+        text::rewrite_block(&mut doc, 0, 0, Some("One\ntwo"), &text::BlockStyle { width: Some(90.0), ..Default::default() })
+            .expect("equivalent effective transforms must permit rotated reflow");
+        let reopened = reopen(&doc);
+        let blocks = text::text_blocks(&reopened, 0).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].editor_text, "One\ntwo");
+        assert!((blocks[0].rotation - 90.0).abs() < 0.01);
+        let [left, right] = blocks[0].horizontal_frame.expect("the resized frame must survive reopening");
+        assert!((left - 400.0).abs() < 0.01 && (right - 490.0).abs() < 0.01);
+        let after = text::text_lines(&reopened, 0).unwrap();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0].baseline(), [300.0, 400.0]);
+        assert_eq!(after[1].baseline(), [314.0, 400.0]);
+        for (original, resized) in before.iter().zip(&after) {
+            assert!(close(resized.rect, original.rect), "equivalent transforms must keep the glyph widths and positions");
+            assert_eq!(resized.color, [0.2, 0.4, 0.6]);
+        }
+    }
+}
+
 #[test]
 fn rotated_text_frame_uses_the_insertion_ctm_and_keeps_its_left_anchor() {
     let mut doc = text_page("q 0 0.5 -0.5 0 40 50 cm BT /F1 12 Tf 72 700 Td (Hi) Tj ET Q");
